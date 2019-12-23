@@ -1,0 +1,778 @@
+from bs4 import BeautifulSoup
+import requests
+import re
+import numpy as np
+import pandas as pd
+import time
+import random
+from fake_useragent import UserAgent
+
+#create delay list for time sleep
+delays = [9, 4, 7, 6, 11, 12, 5]
+
+ua = UserAgent() # From here we generate a random user agent
+blacklist = [] # Will contain blacklisted Proxies
+proxies = [] # Will contain proxies [ip, port]
+cat_url  = [] # Will contain category Urls
+subcat_url = [] # Will contain subcategory Urls
+manafacture_url = [] # Will contain manafacture Urls for toners
+product_list = [] # Will contain Product Urls
+product_data = pd.DataFrame() # Will contain final Product Data
+
+#creating the list of proxies from 'https://www.sslproxies.org/'
+def proxyfinder() :
+    del proxies[:]
+    headers = {'User-Agent':str(ua.random)}
+    req_prox = requests.get('https://www.sslproxies.org/', headers=headers).text
+
+    soup = BeautifulSoup(req_prox, 'html.parser')
+    proxies_table = soup.find(id='proxylisttable')
+
+    # Save proxies in the array
+    for row in proxies_table.tbody.find_all('tr'):
+        px = ':'.join([row.find_all('td')[0].string, row.find_all('td')[1].string])
+        if px not in blacklist:
+            proxies.append(px)
+    return proxies
+
+#create random index number for proxies    
+def random_index(proxies) : 
+    proxy_index = random.randint(0, len(proxies) - 1)
+    return proxy_index
+
+#get random proxy    
+proxies = proxyfinder()
+proxy_index = random_index(proxies)
+proxy = proxies[proxy_index]
+
+url1 = ####################### I do not share the main web-site of this code
+       ####################### ,as they can change their structure after seeing this scrape
+
+# main page request loop
+html1 = None
+responses = None
+while 1:
+    #generate new list of proxies if it has less than 3 proxies
+    if len(proxies) < 3 : 
+        proxies = proxyfinder()
+        proxy_index = random_index(proxies)
+        proxy = proxies[proxy_index]
+        
+    #try to request the page with random headers and random proxy
+    try: 
+        headers = {'User-Agent':str(ua.random)}
+        responses = requests.get(url1, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+        html1 = responses.text
+        #if html is retrieved without any error, then break the loop
+        if  html1 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html1:
+            break
+        #if proxy is blocked by website, then add it to blacklist and generate new one
+        elif 'Ihre IP ist gesperrt' in html1:
+            blacklist.append(proxy)
+            del proxies[proxy_index]
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+        #if responses code is 404(url does not exists), then break the loop
+        elif responses.status_code == 404 : 
+            break
+            
+    #if proxy did not work, then add it to blacklist and generate new one
+    except : 
+        blacklist.append(proxy)
+        del proxies[proxy_index]
+        proxy_index = random_index(proxies)
+        proxy = proxies[proxy_index]
+
+#soup main page for scrape
+soup = BeautifulSoup(html1, "html.parser")
+#get category tags, then append all Urls in cat_url list
+tags=soup('a', class_= 'agr_1')
+for tag in tags:
+    href = tag.get('href', None)
+    cat_url.append(href)
+
+                            ### Begin getting subcategory Urls from Categories ###
+
+#get the random proxy    
+proxies = proxyfinder()
+proxy_index = random_index(proxies)
+proxy = proxies[proxy_index]
+
+#begin the loop of category Urls
+for url2 in cat_url:
+    
+    #choose random delay 
+    delay = np.random.choice(delays)
+    time.sleep(delay) #wait random delay seconds
+
+    #category page request loop
+    html2 = None
+    responses = None
+    while 1:
+        #generate new list of proxies if it has less than 3 proxies
+        if len(proxies) < 3 : 
+            proxies = proxyfinder()
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+            
+        #try to request the page with random headers and random proxy
+        try: 
+            headers = {'User-Agent':str(ua.random)}
+            responses = requests.get(url2, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+            html2 = responses.text
+            #if html is retrieved without any error, then break the loop
+            if  html2 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html2:
+                break
+            #if proxy is blocked by website, then add it to blacklist and generate new one    
+            elif 'Ihre IP ist gesperrt' in html2:
+                blacklist.append(proxy)
+                del proxies[proxy_index]
+                proxy_index = random_index(proxies)
+                proxy = proxies[proxy_index]              
+            #if responses code is 404(url does not exists), then break the loop
+            elif responses.status_code == 404 : 
+                break
+                
+        #if proxy did not work, then add it to blacklist and generate new one
+        except : 
+            blacklist.append(proxy)
+            del proxies[proxy_index]
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+    
+    #if the page does not exist go to next category url without scrape 
+    if responses.status_code == 404 : 
+        continue
+        
+    #soup the category page for scrape
+    soup = BeautifulSoup(html2, "html.parser")
+    
+    #toner category has different configuration on the category level.
+    if 'toner_tinte_zubehoer' in url2:
+        #get manafacture tags, then append all Urls to manafacture_url list
+        tags=soup('a', class_= 'toner_hst_name')
+        for tag in tags:
+            href = tag.get('href', None)
+            if href not in manafacture_url : 
+                manafacture_url.append(href)
+                
+        #begin the loop of manafacture Urls to retrieve subcategory urls of toners
+        for url2_2 in manafacture_url :
+            
+            #choose random delay 
+            delay = np.random.choice(delays)
+            time.sleep(delay) #wait delay seconds
+            
+            # Every 10 requests, generate a new proxy
+            if manafacture_url.index(url2_2) % 10 == 0 : 
+                proxy_index = random_index(proxies)
+                proxy = proxies[proxy_index]
+            
+            #manafacture page request loop
+            html2_2 = None
+            responses = None
+            while 1:
+                #generate new list of proxies if it has less than 3 proxies
+                if len(proxies) < 3 : 
+                    proxies = proxyfinder()
+                    proxy_index = random_index(proxies)
+                    proxy = proxies[proxy_index]
+                    
+                #try to request the page with random headers and random proxy
+                try: 
+                    headers = {'User-Agent':str(ua.random)}
+                    responses = requests.get(url2_2, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+                    html2_2 = responses.text
+                    #if html is retrieved without any error, then break the loop
+                    if  html2_2 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html2_2:
+                        break
+                    #if proxy is blocked by website, then add it to blacklist and generate new one    
+                    elif 'Ihre IP ist gesperrt' in html2_2:
+                        blacklist.append(proxy)
+                        del proxies[proxy_index]
+                        proxy_index = random_index(proxies)
+                        proxy = proxies[proxy_index]              
+                    #if responses code is 404(url does not exists), then break the loop
+                    elif responses.status_code == 404 : 
+                        break
+                        
+                #if proxy did not work, then add it to blacklist and generate new one
+                except : 
+                    blacklist.append(proxy)
+                    del proxies[proxy_index]
+                    proxy_index = random_index(proxies)
+                    proxy = proxies[proxy_index]
+    
+            #if the page does not exist go to next manafacture url without scrape 
+            if responses.status_code == 404 : 
+                continue
+                
+            #soup manafacture page for scrape
+            soup = BeautifulSoup(html2_2, "html.parser")
+            #get subcategory tags, then append all Urls to subcat_url list
+            tags=soup('a', class_= 'toner_hst_modelle')
+            for tag in tags:
+                href = tag.get('href', None)
+                #if tags contains only ending of Urls, therefore, add href to main page url (url1)
+                if not href.startswith('https'):
+                    link = url1 + href + '?limit_produkte_neu=50'
+                # else add whole Url    
+                else :     
+                    link = href + '?limit_produkte_neu=50'
+                if link not in subcat_url :
+                    subcat_url.append(link)
+    
+    #all other categories than toner have same configuration
+    else : 
+        #get subcategory tags,then append all Urls to list
+        tags=soup('a', class_= 'bez_name')    
+        for tag in tags:
+            href = tag.get('href', None)
+            link = href + '?limit_produkte_neu=50'
+            if link not in subcat_url :
+                subcat_url.append(link)
+                
+            
+                            ### Begin getting Product Urls from Subcategories ###
+
+                
+#get the random proxy    
+proxies = proxyfinder()
+proxy_index = random_index(proxies)
+proxy = proxies[proxy_index]
+
+#begin the loop of subcategory Urls
+for url3 in subcat_url:
+
+    #choose random delay 
+    delay = np.random.choice(delays)
+    time.sleep(delay) #wait delay seconds
+        
+    # Every 10 requests, generate a new proxy
+    if subcat_url.index(url3) % 10 == 0 : 
+        proxy_index = random_index(proxies)
+        proxy = proxies[proxy_index]
+
+    #requesting category page loop
+    html3 = None
+    responses = None 
+    while 1:
+        #generate new list of proxies if it has less than 3 proxies
+        if len(proxies) < 3 : 
+            proxies = proxyfinder()
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+            
+        #try to request the page with random headers and random proxy
+        try: 
+            headers = {'User-Agent':str(ua.random)}
+            responses = requests.get(url3, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+            html3 = responses.text
+            #if html is retrieved without any error, then break the loop
+            if  html3 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html3:
+                break
+            #if proxy is blocked by website, then add it to blacklist and generate new one    
+            elif 'Ihre IP ist gesperrt' in html3:
+                blacklist.append(proxy)
+                del proxies[proxy_index]
+                proxy_index = random_index(proxies)
+                proxy = proxies[proxy_index]              
+            #if responses code is 404(url does not exists), then break the loop
+            elif responses.status_code == 404 : 
+                break
+                
+        #if proxy did not work, then add it to blacklist and generate new one
+        except : 
+            blacklist.append(proxy)
+            del proxies[proxy_index]
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+    
+    #if the page does not exist go to next subcategory url without scrape 
+    if responses.status_code == 404 : 
+        continue
+        
+    #soup subcategory page for scrape
+    soup = BeautifulSoup(html3, "html.parser")
+
+    #get product tags, the append all Urls to product_url list
+    product_tags = soup('a', class_= 'bezeichnung')
+    for tag in product_tags :
+        href = tag.get('href', None)
+        if href not in product_url : 
+            product_url.append(href)
+    
+    #if there is more than one page, then get other page numbers
+    page_tags = [] # create/empty page_tag list for a condition
+    numb = 0  # 0 value for calculating the maximum page numbers
+    page_tags = soup('a', class_= 'pages') 
+    if len(page_tags) > 0 :
+        for tag in page_tags: 
+            n = BeautifulSoup(str(tag), "lxml").get_text()
+            n = int(n)
+            #getting the maximum page number (last page)
+            if n > numb : 
+                numb = int(n)
+                
+        #begin to scrape other page Urls to retrieve all product lists
+        #loop between 1 and maximum page number to create other page urls
+        for n in range(1,numb) :
+            #create other page urls
+            url3_2 = url3.replace('.html?limit_produkte_neu=50', '')+',s-'+str(n*50)+'.html?limit_produkte_neu=50'  
+            
+            #choose random delay 
+            delay = np.random.choice(delays)
+            time.sleep(delay) #wait "delay" seconds   
+            
+            #generate new IP address after each 5 page
+            if n % 5 == 0 : 
+                proxy_index = random_index(proxies)
+                proxy = proxies[proxy_index]
+            
+            #requesting category page loop
+            html3_2 = None
+            responses = None
+            while 1:
+                #generate new list of proxies if it has less than 3 proxies
+                if len(proxies) < 3 : 
+                    proxies = proxyfinder()
+                    proxy_index = random_index(proxies)
+                    proxy = proxies[proxy_index]
+                    
+                #try to request the page with random headers and random proxy
+                try: 
+                    headers = {'User-Agent':str(ua.random)}
+                    responses = requests.get(url3_2, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+                    html3_2 = responses.text
+                    #if html is retrieved without any error, then break the loop
+                    if  html3_2 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html3_2:
+                        break
+                    #if proxy is blocked by website, then add it to blacklist and generate new one    
+                    elif 'Ihre IP ist gesperrt' in html3_2:
+                        blacklist.append(proxy)
+                        del proxies[proxy_index]
+                        proxy_index = random_index(proxies)
+                        proxy = proxies[proxy_index]              
+                    #if responses code is 404(url does not exists), then break the loop
+                    elif responses.status_code == 404 : 
+                        break
+                        
+                #if proxy did not work, then add it to blacklist and generate new one
+                except : 
+                    blacklist.append(proxy)
+                    del proxies[proxy_index]
+                    proxy_index = random_index(proxies)
+                    proxy = proxies[proxy_index]
+
+            #if the page does not exist go to next category url without scrape 
+            if responses.status_code == 404 : 
+                continue
+                
+            #soup other page of subcategory for scrape
+            soup = BeautifulSoup(html3_2, "html.parser")
+            
+            #get product tags, the append all Urls to product_url list
+            product_tags = soup('a', class_= 'bezeichnung')
+            for tag in product_tags :
+                href = tag.get('href', None)
+                if href not in product_url : 
+                    product_url.append(href)
+
+#get distinct urls for each product
+pd_list = [] # will contain (product_id, url) tuples
+for url in product_url:
+    product_id = url.replace('https://www.bueromarkt-ag.de/', '').replace('.html', '')
+    product_id = product_id.split(',')[1]
+    product_id = product_id[2:]
+    pd_list.append((product_id, url))
+    
+#create index list    
+index = list(range(0,len(product_list)))
+#create dataframe from list
+dfObj1 = pd.DataFrame(pd_list, columns = ['Product' , 'URL'], index=index) 
+#group by product ID and get only first Url for each product
+dfObj2 = dfObj1.groupby('Product').first()
+#get list of distinct product Urls
+product_list = list(dfObj2['URL'])
+
+
+                            ### Begin getting product data from Subcategories ###
+
+    
+#get the random proxy    
+proxies = proxyfinder()
+proxy_index = random_index(proxies)
+proxy = proxies[proxy_index]
+
+#begin the loop of Product Urls
+for url4 in product_list:
+
+    #check if url exists in DF, if exists then skip scrape       
+    if url4 in product_data.values :
+        continue    
+        
+    #choose random delay 
+    delay = np.random.choice(delays)
+    time.sleep(delay) #wait delay seconds
+    
+    # create/empty all lists/dict for each tags
+    title_tags = None  # Will contain Title Tags
+    pd_numb_tags = None # Will contain product ID Tags
+    nav_tags = None # Will contain navigation bar Tags
+    lfzt_tags = None # Will contain shipping metod Tags
+    cart_tags = None # Will contain availability Tags
+    price_tags = None # Will contain price Tags
+    price_info_tags = None # Will contain pack size info Tags
+    pack_tags = None # Will contain other pack Tags
+    subproduct_tags = None # Will contain subproduct Tags
+    product_dict = {} # Will contain Title Tags
+
+    # Every 10 requests, generate a new proxy
+    if product_list.index(url4) % 10 == 0 : 
+        proxy_index = random_index(proxies)
+        proxy = proxies[proxy_index]
+        
+    #requesting category page loop
+    html4 = None
+    responses = None
+    while 1:
+        #generate new list of proxies if it has less than 3 proxies
+        if len(proxies) < 3 : 
+            proxies = proxyfinder()
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+            
+        #try to request the page with random headers and random proxy
+        try: 
+            headers = {'User-Agent':str(ua.random)}
+            responses = requests.get(url4, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+            html4 = responses.text
+            #if html is retrieved without any error, then break the loop
+            if  html4 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html4:
+                break
+            #if proxy is blocked by website, then add it to blacklist and generate new one    
+            elif 'Ihre IP ist gesperrt' in html4:
+                blacklist.append(proxy)
+                del proxies[proxy_index]
+                proxy_index = random_index(proxies)
+                proxy = proxies[proxy_index]              
+            #if responses code is 404(url does not exists), then break the loop
+            elif responses.status_code == 404 : 
+                break
+                
+        #if proxy did not work, then add it to blacklist and generate new one
+        except : 
+            blacklist.append(proxy)
+            del proxies[proxy_index]
+            proxy_index = random_index(proxies)
+            proxy = proxies[proxy_index]
+    
+    #if the page does not exist go to next category url without scrape 
+    if responses.status_code == 404 : 
+        continue
+    
+    #soup product html
+    soup = BeautifulSoup(html4, "html.parser")
+  
+    #get title tag of the product
+    title_tags = soup('title')
+    #getting the title of the product
+    title_text = None
+    if title_tags is not None : 
+        if len(title_tags) >0:
+            title = title_tags[0]
+            title_text = BeautifulSoup(str(title), "lxml").get_text().strip()
+            
+    #get nav tags of the product
+    nav_tags = soup('a', class_= 'artikelansicht_navi')
+    #getting the navigation bar of the product
+    category = None
+    subcategory = None
+    subcategory2 = None  
+    if nav_tags is not None : 
+        if len(nav_tags) > 0  :
+            for idx, tag in enumerate(nav_tags) :
+                cleantext = BeautifulSoup(str(tag), "lxml").get_text().strip()
+                if idx == 1 : 
+                    category = cleantext
+                elif idx == 2 :
+                    subcategory  = cleantext
+                if len(nav_tags) > 3 :
+                    if idx == 3 : 
+                        subcategory2 = cleantext
+
+    #get id tags of the product
+    pd_numb_tags = soup.find(id="Bildname")
+    #getting product number 
+    pd_numb = None
+    if pd_numb_tags is not None :
+        pd_numb = re.findall(r'value=["](.*)["]', str(pd_numb_tags))[0]
+
+    #get Lieferzeit tags of the product
+    lfzt_tags = soup('div', class_ = 'artikelbox_lieferzeit1_d')    
+    #getting the Lieferzeit value of the Product
+    lfzt_text = None
+    if lfzt_tags is not None : 
+        if len(lfzt_tags) > 0 :
+            lfzt = lfzt_tags[0]
+            lfzt_text = BeautifulSoup(str(lfzt), "lxml").get_text()
+            lfzt_text = lfzt_text.split(':')[1].strip()
+
+    #get cart tags of the product
+    cart_tags = soup('button', class_ = 'btn-addtocart')
+    #checking if the product is avaialable in website   
+    avlb = None
+    if cart_tags is not None : 
+        if len(cart_tags) > 0:
+            avlb = 'Available'
+        else: avlb = 'Unavailable'     
+
+    #get  price tags of the product
+    price_tags = soup('div', class_ = 'pricetable_preis')
+    #getting the price value of the Product
+    price = None
+    price_val = None
+    if price_tags is not None : 
+        if len(price_tags) > 0:
+            price = price_tags[0]
+            price_val = BeautifulSoup(str(price), "lxml").get_text()
+            price_val = price_val.replace('€', '').strip()
+
+    #get price_info tags of the product
+    price_info_tags = soup('div', class_ = 'pricetable_info')
+    #getting the pack size of the procduct
+    price_info = None
+    pack_size = 'Pack 1 Price'
+    if price_info_tags is not None  :
+        if len(price_info_tags) > 0:
+            info = price_info_tags[0]
+            price_info = BeautifulSoup(str(info), "lxml").get_text().strip()
+            if len(price_info) < 1 :
+                pack_size = 'Pack 1 Price'
+            else : 
+                pack_size = 'Pack ' + str(price_info) + ' Price'
+        else: pack_size = 'Pack 1 Price'
+
+    #add information of product to dictionary
+    product_dict = {
+                    '1.Product URL' : url4
+                    ,'2.Product_Name' : title_text
+                    ,'3.Product_Number' : pd_numb
+                    ,'4.Category' : category
+                    ,'5.Subcategory' : subcategory
+                    ,'6.Sub-Subcategory' : subcategory2
+                    ,'7.Lieferzeit' : lfzt_text
+                    ,'8.Availability' : avlb
+                    ,pack_size : price_val
+                    }
+
+    #get other pack tags of the product
+    pack_tags = soup('div', class_ = 'pricetable_staffelzeile')
+    #get data on other pack size and prices 
+    pack_numb = None
+    pack_price = None
+    if pack_tags is not None :
+        if len(pack_tags) >0:
+            for pack in pack_tags : 
+                pack_info = BeautifulSoup(str(pack), "lxml").get_text().strip()
+                pack_info = pack_info.split()
+                pack_numb =  'Pack ' + str(pack_info[0].strip()) + ' Price'
+                pack_price = pack_info[1].replace('€','').strip()
+                if pack_numb not in product_dict:
+                    product_dict[pack_numb] = pack_price 
+
+    #add the porduct information in DataFrame            
+    if product_dict['1.Product URL'] not in product_data.values :
+        product_data = product_data.append(product_dict, ignore_index=True) 
+        
+    #if the product has sub-products then should have 'var_frame_da' tags
+    subproduct_tags = soup('div', class_= 'var_frame_da')
+    
+    #checking if there is subproducts
+    if subproduct_tags is not None :
+        for tag in subproduct_tags :
+            #selectedvar is the url of main product, so avoid second scrape but scrape all other subproducts
+            if 'selectedVar' not in str(tag) :
+                a  = tag.find_all('a')
+                #retrieve subproduct url from tag
+                url4_2 = re.findall(r'<a [a-z]+.["](.*)["] [a-z].*/a>', str(a))[0]
+                
+                #check if url exists in DF           
+                if url4_2 in product_data.values :
+                    continue
+                    
+                #choose random delay 
+                delay = np.random.choice(delays)
+                time.sleep(delay) #wait delay seconds
+
+                # create/empty all lists/dict for each tags
+                title_tags = None  # Will contain Title Tags
+                pd_numb_tags = None # Will contain product ID Tags
+                nav_tags = None # Will contain navigation bar Tags
+                lfzt_tags = None # Will contain shipping metod Tags
+                cart_tags = None # Will contain availability Tags
+                price_tags = None # Will contain price Tags
+                price_info_tags = None # Will contain pack size info Tags
+                pack_tags = None # Will contain other pack Tags
+                product_dict = {} # Will contain Title Tags
+
+                # Every 5 requests, generate a new proxy
+                if subproduct_tags.index(tag) % 5 == 0 : 
+                    proxy_index = random_index(proxies)
+                    proxy = proxies[proxy_index]
+                    
+                #requesting category page loop
+                html4_2 = None
+                responses = None
+                while 1:
+                    #generate new list of proxies if it has less than 3 proxies
+                    if len(proxies) < 3 : 
+                        proxies = proxyfinder()
+                        proxy_index = random_index(proxies)
+                        proxy = proxies[proxy_index]
+                    #try to request the page with random headers and random proxy
+                    try: 
+                        headers = {'User-Agent':str(ua.random)}
+                        responses = requests.get(url4_2, proxies={"http": proxy, "https": proxy}, headers=headers, stream=True, timeout = 10)
+                        html4_2 = responses.text
+                        #if html is retrieved without any error, then break the loop
+                        if  html4_2 is not None and responses.status_code == 200 and 'Ihre IP ist gesperrt' not in html4_2:
+                            break
+                        #if proxy is blocked by website, then add it to blacklist and generate new one    
+                        elif 'Ihre IP ist gesperrt' in html4_2:
+                            blacklist.append(proxy)
+                            del proxies[proxy_index]
+                            proxy_index = random_index(proxies)
+                            proxy = proxies[proxy_index]              
+                        #if responses code is 404(url does not exists), then break the loop
+                        elif responses.status_code == 404 : 
+                            break
+                    #if proxy did not work, then add it to blacklist and generate new one
+                    except : 
+                        blacklist.append(proxy)
+                        del proxies[proxy_index]
+                        proxy_index = random_index(proxies)
+                        proxy = proxies[proxy_index]
+
+                #if the page does not exist go to next category url without scrape 
+                if responses.status_code == 404 : 
+                    continue
+
+                #soup subproduct html
+                soup = BeautifulSoup(html4_2, "html.parser")
+
+                #get title tag of the product
+                title_tags = soup('title')
+                #getting the title of the product
+                title_text = None
+                if title_tags is not None : 
+                    if len(title_tags) >0:
+                        title = title_tags[0]
+                        title_text = BeautifulSoup(str(title), "lxml").get_text().strip()
+
+                #get nav tags of the product
+                nav_tags = soup('a', class_= 'artikelansicht_navi')
+                #getting the navigation bar of the product
+                category = None
+                subcategory = None
+                subcategory2 = None  
+                if nav_tags is not None : 
+                    if len(nav_tags) > 0  :
+                        for idx, tag in enumerate(nav_tags) :
+                            cleantext = BeautifulSoup(str(tag), "lxml").get_text().strip()
+                            if idx == 1 : 
+                                category = cleantext
+                            elif idx == 2 :
+                                subcategory  = cleantext
+                            if len(nav_tags) > 3 :
+                                if idx == 3 : 
+                                    subcategory2 = cleantext
+
+                #get id tags of the product
+                pd_numb_tags = soup.find(id="Bildname")
+                #getting product number 
+                pd_numb = None
+                if pd_numb_tags is not None :
+                    pd_numb = re.findall(r'value=["](.*)["]', str(pd_numb_tags))[0]
+
+                #get Lieferzeit tags of the product
+                lfzt_tags = soup('div', class_ = 'artikelbox_lieferzeit1_d')    
+                #getting the Lieferzeit value of the Product
+                lfzt_text = None
+                if lfzt_tags is not None : 
+                    if len(lfzt_tags) > 0 :
+                        lfzt = lfzt_tags[0]
+                        lfzt_text = BeautifulSoup(str(lfzt), "lxml").get_text()
+                        lfzt_text = lfzt_text.split(':')[1].strip()
+
+                #get cart tags of the product
+                cart_tags = soup('button', class_ = 'btn-addtocart')
+                #checking if the product is avaialable in website   
+                avlb = None
+                if cart_tags is not None : 
+                    if len(cart_tags) > 0:
+                        avlb = 'Available'
+                    else: avlb = 'Unavailable'     
+
+                #get  price tags of the product
+                price_tags = soup('div', class_ = 'pricetable_preis')
+                #getting the price value of the Product
+                price = None
+                price_val = None
+                if price_tags is not None : 
+                    if len(price_tags) > 0:
+                        price = price_tags[0]
+                        price_val = BeautifulSoup(str(price), "lxml").get_text()
+                        price_val = price_val.replace('€', '').strip()
+
+                #get price_info tags of the product
+                price_info_tags = soup('div', class_ = 'pricetable_info')
+                #getting the pack size of the procduct
+                price_info = None
+                pack_size = 'Pack 1 Price'
+                if price_info_tags is not None  :
+                    if len(price_info_tags) > 0:
+                        info = price_info_tags[0]
+                        price_info = BeautifulSoup(str(info), "lxml").get_text().strip()
+                        if len(price_info) < 1 :
+                            pack_size = 'Pack 1 Price'
+                        else : 
+                            pack_size = 'Pack ' + str(price_info) + ' Price'
+                    else: pack_size = 'Pack 1 Price'
+
+                #add information of product to dictionary
+                product_dict = {
+                                '1.Product URL' : url4_2
+                                ,'2.Product_Name' : title_text
+                                ,'3.Product_Number' : pd_numb
+                                ,'4.Category' : category
+                                ,'5.Subcategory' : subcategory
+                                ,'6.Sub-Subcategory' : subcategory2
+                                ,'7.Lieferzeit' : lfzt_text
+                                ,'8.Availability' : avlb
+                                ,pack_size : price_val
+                                }
+
+                #get other pack tags of the product
+                pack_tags = soup('div', class_ = 'pricetable_staffelzeile')
+                #get data on other pack size and prices 
+                pack_numb = None
+                pack_price = None
+                if pack_tags is not None :
+                    if len(pack_tags) >0:
+                        for pack in pack_tags : 
+                            pack_info = BeautifulSoup(str(pack), "lxml").get_text().strip()
+                            pack_info = pack_info.split()
+                            pack_numb =  'Pack ' + str(pack_info[0].strip()) + ' Price'
+                            pack_price = pack_info[1].replace('€','').strip()
+                            if pack_numb not in product_dict:
+                                product_dict[pack_numb] = pack_price 
+
+                #add the porduct detail in DataFrame            
+                if product_dict['1.Product URL'] not in product_data.values :
+                    product_data = product_data.append(product_dict, ignore_index=True)
+                
+                time.sleep(1) #wait 1 seconds before beginning next loop
+
+    time.sleep(1) #wait 1 seconds before beginning next loop
+    
