@@ -1,0 +1,533 @@
+# -*- coding: utf-8 -*- 
+import logging
+import datetime
+import os
+import random
+import json
+import requests
+import csv
+import numpy as np
+import re
+
+from bs4 import BeautifulSoup
+from time import sleep
+from logging.handlers import RotatingFileHandler
+from stem import Signal
+from stem.control import Controller
+
+LOG = None
+class Log():
+    """Logger class"""
+
+    def __init__(self, service_name, path_to_logs='./logs', no_timestamp=False):
+        self.service_name = service_name
+        self.path = path_to_logs
+        self.start_time = datetime.datetime.now()
+        self.exception_count = 0
+
+        # this is for debug purposes only
+        if no_timestamp:
+            self.timestamp = 'no_timestamp'
+        else:
+            self.timestamp = self.start_time.strftime("%Y-%m-%d_%H-%M-%S")
+
+        # create folder if it's not there
+        if not os.path.isdir(self.path):
+            os.mkdir(self.path)
+
+        self.filename = "{}__{}.log".format(self.service_name, self.timestamp)
+        self.fullpath = '{}/{}'.format(self.path, self.filename)
+
+        self.logger = logging.getLogger(self.service_name)
+        self.logger.handlers = []
+        hdlr = RotatingFileHandler(
+            self.fullpath, 
+            mode = 'a', 
+            maxBytes = 10 * 1024 * 1024,
+            backupCount = 10, 
+            encoding = None, 
+            delay = 0
+        )
+
+        formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+        hdlr.setFormatter(formatter)
+        self.logger.addHandler(hdlr)
+        self.logger.setLevel(logging.DEBUG)
+
+
+    def get_time_passed(self, from_now = None):
+        if not from_now:
+            from_now = self.start_time
+
+        minutes_total, seconds = divmod((datetime.datetime.now() - from_now).total_seconds(), 60)
+        hours, minutes = divmod(minutes_total, 60)
+        return hours, minutes, seconds
+
+
+    def exception_count_set(self, exception_text):
+        self.exception_count += 1
+        self.logger.exception(exception_text)
+
+
+    def set_log(self):
+        global LOG
+        LOG = self
+
+
+class Connection():
+    global LOG
+
+    session = None
+    show_ips = False
+
+    timeout = 10
+    sleep = 0
+    
+    headers = {
+                    "User-Agent": 'Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36',
+                    'X-Forwarded-For': '%s.%s.%s.%s' % (
+                        random.randint(0, 255),
+                        random.randint(0, 255),
+                        random.randint(0, 255),
+                        random.randint(0, 255)
+                    )
+                }
+
+    
+    def __init__(self, use_proxies = False, show_ips = False):
+        self.show_ips = show_ips
+        self.connection_requests = 0
+        
+
+
+    # this will return the page requested and the sessions headers
+    def get_page(self, url, params = None, retries = 0):
+        
+        sleep(self.sleep)
+
+        if not params:
+            params = {}
+
+        if not retries:
+            retries = 0
+
+        try:
+                
+            page = self.session.get(
+                url,
+                headers = self.headers, 
+                timeout = self.timeout,
+                params = params
+            )
+
+            # count the amount of requests done
+            self.connection_requests += 1
+
+            return page
+
+        except Exception as e:
+            LOG.exception_count_set(str(e))
+
+            if(retries >= 10):
+                raise "Too many retries"
+
+        return self.get_page(url, params, retries + 1)
+
+    # this will return the page requested and the sessions headers
+    def post_data(self, url, data_to_send, retries = 0):
+        if not retries:
+            retries = 0
+
+        try:
+                
+            data_returned = self.session.post(
+                url,
+                data = data_to_send,
+                timeout = self.timeout
+            )
+
+            # count the amount of requests done
+            self.connection_requests += 1
+
+            return data_returned
+
+        except Exception as e:
+            LOG.exception_count_set(str(e))
+
+            if(retries >= 10):
+                raise "Too many retries"
+
+            self.reset_ip_get_session()
+
+        sleep(self.sleep)
+        return self.post_data(url, data_to_send, retries + 1)
+                    
+class FileExport():
+    
+    def __init__(self, service_name, fieldnames, path_to_files='./files', no_timestamp=False):
+        self.service_name = service_name
+        self.path = path_to_files
+        self.fieldnames = fieldnames
+        self.has_headers = False
+
+        # this is for debug purposes only
+        if no_timestamp:
+            self.timestamp = 'no_timestamp'
+        else:
+            self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        # create folder if it's not there
+        if not os.path.isdir(self.path):
+            os.mkdir(self.path)
+
+        self.filename = "{} Scrape.csv".format(self.service_name)#, self.timestamp)
+        self.fullpath = '{}/{}'.format(self.path, self.filename)
+        self.write_mode = 'w'
+
+    # create/overwrite a file and append data as needed once created
+    def write_row_to_file(self, row):
+        with open(self.fullpath, mode=self.write_mode) as file_obj:
+            self.writer_obj = csv.DictWriter(
+                file_obj, 
+                fieldnames=self.fieldnames, 
+                delimiter=';', 
+                quotechar='"', 
+                quoting=csv.QUOTE_MINIMAL
+            )
+
+            # if headers were not created then the file was just created/opened 
+            # for the first time and we want to append data, not overwrite
+            if not self.has_headers:
+                self.writer_obj.writeheader()
+                self.has_headers = True      
+                self.write_mode = 'a'   
+
+            self.writer_obj.writerow(row)   
+
+class Scrape():
+    global LOG
+    global FileExport
+    
+    def __init__(self, file_name, file_headers):
+        self.file_export_obj = FileExport(file_name, file_headers)
+
+    def maximum_pages(self, pages):
+        #getting all page a tags
+        page_a_tags = pages.find_all("a")
+        #taking only the numbers from page tags
+        page_numbs = [int(page.text) for page in page_a_tags if page.text not in ['Zurück', 'Weiter']]  
+        #finding maximum number of pages
+        max_page = max([i for i in page_numbs if isinstance(i, int)])
+        
+        return max_page
+        
+    
+    def product_list_scrape(self, product_element, nav_info, url):
+        temp_product_row = {}
+        
+        #getting product tags 
+        prod_tag = product_element.find("p", {"class" : "prod_desc"})
+        
+        if prod_tag: 
+            #getting a tags 
+            prod_tag = prod_tag.find('a')
+            #getting product url
+            product_url = prod_tag['href'].strip()
+            description = prod_tag.text.strip()
+        else : 
+            product_url = 'N/A'
+            description = 'N/A'
+        
+        temp_product_row['description'] = description
+        temp_product_row['Url'] = product_url
+        
+        #brand info does not exists in category/subcategory level
+        temp_product_row['Brand'] =  'N/A'
+        
+        #getting unitmeasure
+        if description != 'N/A' :
+            splited_desc = description.split(',')[-1]
+            st = re.findall(r'.*\s([0-9]*\'?x?[0-9]+\s?St.?ü?c?k?)', splited_desc)
+            bl = re.findall(r'.*\s([0-9]*\'?x?[0-9]+\s?Bl.?a?t?t?)', splited_desc)
+            paar = re.findall(r'.*\s([0-9]+\s?Paar)', splited_desc)
+            if st and bl:
+                unitmeasure = '{}/{}'.format(bl[0],st[0])
+            elif st:
+                unitmeasure = st[0]
+            elif bl :
+                unitmeasure = bl[0]
+            elif paar:
+                unitmeasure = paar[0]
+            else : 
+                unitmeasure = 'N/A'
+        else :
+            unitmeasure = 'N/A'
+            
+        #getting packsize
+        numb =  re.findall('([0-9]*\'?x?[0-9]+).*', unitmeasure)
+        if numb :
+            packsize = numb[0]
+        else:
+            packsize = 'N/A'
+            
+        temp_product_row['PackSize'] = packsize
+        temp_product_row['UnitMeasure'] = unitmeasure
+        
+        #below fields do not exists in this website
+        temp_product_row['EAN code'] = 'N/A'
+        temp_product_row['Manufacturer Part Number'] = 'N/A'
+        
+        #getting reference tag
+        ref_tag = product_element.find("p", {"class" : "reference_cms"})
+        prod_numb = None
+        if ref_tag:
+            prod_numb = ref_tag.text.replace('Artikel-Nr.:', '').replace('Bestell-Nr.', '').strip()
+        else:
+            prod_numb = 'N/A'
+        temp_product_row['ArticleNumber'] = prod_numb
+        
+        #getting breadcrumbs 
+        if nav_info:
+            breadcrumb = []
+            breadcrumbs = nav_info.text.strip()
+            breadcrumbs = nav_info.text
+            for bc in breadcrumbs.split('>'):
+                bc = bc.strip().split("\n")[0]
+                breadcrumb.append(bc)
+                breadcrumbs_full = '>'.join(breadcrumb)
+        else:
+            breadcrumbs_full = 'N/A'
+            
+        temp_product_row['BreadCrumbs'] = breadcrumbs_full
+        
+        temp_product_row['Scrape_URL'] = url
+        
+        return temp_product_row
+
+    def page_scrape(self, soup, url) : 
+        #getting product info tag
+        product_info = soup.find_all("div", {"class" : "item-content"})
+        #getting navigation tags
+        nav_info = soup.find("div", {"class" : "nav_bar"})
+        
+        LOG.logger.info('-- Number of products : {}'.format(len(product_info)))
+        
+        if product_info : 
+            n = 0
+            for product_element in product_info:
+                n += 1
+                try:
+                    temp_product_row = {}
+                    temp_product_row = self.product_list_scrape(product_element, nav_info, url)
+                    
+                    # add row to the csv file
+                    self.file_export_obj.write_row_to_file(temp_product_row)
+                    LOG.logger.info('--- Handled item {} : "{}"'.format(n, temp_product_row['ArticleNumber']))
+                except Exception as e:
+                    LOG.logger.info('Error in Handling item {} : {}'.format(n ,str(e)))
+        else: 
+            LOG.logger.info('--- No Product in page')
+  
+
+site_name = 'lyreco_DEDE'
+LOG = Log(site_name, './logs', no_timestamp=True)
+LOG.set_log()
+LOG.logger.info('--------------------- Starting the process ---------------------')
+
+connection = Connection(use_proxies=False, show_ips=True)
+connection.sleep = 2
+connection.session = requests.session()
+delays = [2,4,6,3,5]
+
+# header names to be used in the csv file and data dictionary
+csv_header_names = ['description', 'Url', 'Brand', 'PackSize', 'UnitMeasure', 'EAN code', 'Manufacturer Part Number', 'ArticleNumber', 'BreadCrumbs', 'Scrape_URL']
+
+# create scrape object 
+scraper = Scrape(site_name, csv_header_names)
+
+#necessary URLs for scrape
+base_url = 'https://www.lyreco.com/webshop/DEDE'
+search_url = 'https://www.lyreco.com/webshop/DEDE/search/page/'
+filter_url ='https://www.lyreco.com/webshop/DEDE/search/addFacet'
+
+#request and soup the webpage
+page = connection.get_page(base_url)
+soup = BeautifulSoup(page.text, 'html.parser')
+
+LOG.logger.info('{} Page was accessed with status {}'.format(base_url, page.status_code))
+
+#getting all the categories
+categories = soup.find("div", {"id" : "menu"})
+
+if categories : 
+    #all category 
+    category_tags = categories.find_all("dl", class_ = "under_menu_list")
+    for idx, category_tag in enumerate(category_tags):
+        category_element = category_tag.find('dt').find('a')
+
+        #getting delay second sleep in each category loop 
+        delay = np.random.choice(delays)
+        time.sleep(int(delay))
+        
+        #getting category name
+        category_name = category_element.text.strip()
+        
+        #Avoid Toner guide category
+        if category_name == 'Druckerzubehörsuche':
+            continue
+            
+        LOG.logger.info('Starting process for Category {} - {}'.format(idx, category_name))
+        #getting category url    
+        category_url = category_element['href']
+
+        #creating new session for all the cookies to be saved for all pages
+        connection.session = requests.session()
+        
+        try :
+            category_page = connection.get_page(category_url)
+            category_soup = BeautifulSoup(category_page.text, 'html.parser')
+            LOG.logger.info('- Page {} was accessed, status : {}'.format(category_url, category_page.status_code))
+
+            #category
+            if category_name != 'Persönliche Schutzausrüstung':
+            
+                #scrape page and get products with built in function
+                scraper.page_scrape(category_soup, category_url)
+                
+                #find maximum number of pages 
+                pages = category_soup.find("div", {"id" : "pagination"})
+                if pages :
+                    page_numb = None
+                    max_page = scraper.maximum_pages(pages)
+                    
+                    for page in range(1,max_page):
+
+                        #getting delay second sleep
+                        delay = np.random.choice(delays)
+                        time.sleep(int(delay))
+                        
+                        #creating #page URL
+                        next_page_url = '{}{}'.format(search_url,page)
+                        #creating actual  page number object
+                        page_numb = page +1 
+                        
+                        LOG.logger.info('Scraping page Number {}'.format(page_numb))
+                        try:
+                            next_page = connection.get_page(next_page_url)
+                            next_page_soup = BeautifulSoup(next_page.text, 'html.parser')
+                            
+                            LOG.logger.info('- {} Page {} was accessed, status : {}'.format(category_name ,next_page_url, next_page.status_code))
+
+                            #scrape page and get products with built in function
+                            scraper.page_scrape(next_page_soup, category_url)
+                            
+                        except Exception as e:
+                            LOG.exception_count_set("Handling {}'s page number {} failed with error: {}".format(category_name, page_numb, str(e)))
+            
+            #special case for the category Persönliche Schutzausrüstung as it has more than 3000 SKUs and require filtering.
+            else:
+
+                #dictionary for filter codes 
+                filter_dict = {}
+                
+                #code of session for posting the filter information 
+                csrf = category_soup.find("meta", {"name" : "_csrf"})["content"]
+
+                #get filter content tag
+                filter_list = category_soup.find_all("div", {"class" : "filter_content open"})
+                for filters in filter_list:
+                    #getting the name of filter types to choose only Anwendung/Nutzung
+                    filter_name = filters.find("div", {"class" : "titleFacette"})
+                    if filter_name :
+                        filter_name = filter_name.text
+                        #if name is Anwendung/Nutzung then get all dd tags from main filters tags
+                        if filter_name == 'Anwendung/Nutzung':
+                            subfilters = filters.find_all('dd')
+                            #loop through each filter type 
+                            for subfilter in subfilters:
+                                #create dictionary with filter name and filter code
+                                try:
+                                    #getting the name of filter
+                                    filter_subname = subfilter.find("div", {"class" : "filter-description"}).text
+                                    #getting a tags from filter 
+                                    filter_a_tags = subfilter.find('a')
+                                    filter_code = re.findall(r"<a.*Search[(](.*)[)];track", str(filter_a_tags))[0].replace("'",'')
+                                    #creating required string format 
+                                    facets = '["{}"]'.format(filter_code)
+                                    #adding the filter name and code to dictinionary 
+                                    filter_dict[filter_subname]  = facets
+                                except:
+                                    pass
+                
+                for k, v in filter_dict.items():
+
+                    #getting delay second sleep in each dict item
+                    delay = np.random.choice(delays)
+                    time.sleep(int(delay))
+                    
+                    #create dictionary of data to send with post
+                    data_to_send = {
+                        'facets' : v,
+                        'sort' : 'PERTINENCE',
+                        'display' : None,
+                        'urlPromoPrice' : 'https://www.lyreco.com/webshop/DEDE/sb/checkPromoPrice',
+                        'noCategoriesSelected' : None,
+                        'noSeoFacetedFilterConnected' : None,
+                        'displayBy' : 36,
+                        '_csrf' : csrf
+                    }
+                    
+                    #requesting pages with each filter
+                    filter_page = connection.post_data(filter_url, data_to_send)
+                    filter_soup = BeautifulSoup(filter_page.text, 'html.parser')
+                    LOG.logger.info('-- Filtered page with {}, access status : {}'.format(k, filter_page.status_code))
+    
+                    #scrape page and get products with built in function
+                    scraper.page_scrape(filter_soup, category_url)
+                    
+                    #find maximum number of pages if there is page tags
+                    pages = filter_soup.find("div", {"id" : "pagination"})
+                    if pages :
+                        page_numb = None
+                        max_page = scraper.maximum_pages(pages)
+                        
+                        for page in range(1,max_page):
+
+                            #getting delay second sleep
+                            delay = np.random.choice(delays)
+                            time.sleep(int(delay))
+                            
+                            #creating #page URL
+                            next_page_url = '{}{}'.format(search_url,page)
+                            #creating actual page number object
+                            page_numb = page +1 
+                            
+                            LOG.logger.info('Scraping page Number {}'.format(page_numb))
+                            try:
+                                next_page = connection.get_page(next_page_url)
+                                next_page_soup = BeautifulSoup(next_page.text, 'html.parser')
+                                
+                                LOG.logger.info('- {} Filter Page {} was accessed, status : {}'.format(k,next_page_url, next_page.status_code))
+
+                                #scrape page and get products with built in function
+                                scraper.page_scrape(next_page_soup, category_url)
+                                
+                            except Exception as e:
+                                LOG.exception_count_set("Handling {}'s page number {} failed with error: {}".format(category_name, page_numb, str(e)))
+                    
+                    #instead of posting deselected filter, creating new session and accessing the category again 
+                    connection.session = requests.session()
+                    category_page = connection.get_page(category_url)
+                    category_soup = BeautifulSoup(category_page.text, 'html.parser')
+                    
+                    time.sleep(2)
+                    
+        except Exception as e:
+            LOG.exception_count_set('Handling Category page {} failed with error: {}'.format(category_url, str(e)))
+
+        time.sleep(2)
+        
+    hours, minutes, seconds = LOG.get_time_passed()
+    LOG.logger.info('{} hours, {} minutes and {} seconds passed while processing the site'.format(hours, minutes, seconds))
+    LOG.logger.info('{} exceptions caught'.format(LOG.exception_count))
+    LOG.logger.info('{} requests made'.format(connection.connection_requests)) 
